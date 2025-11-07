@@ -18,4 +18,4 @@
 
 1. Download this plugin or clone it from GitHub:  
    ```bash
-   git clone https://github.com/<your-github-username>/unused-media-checker.git</your-github-username>
+   git clone https://github.com/mbandakcioglu/wp-unused-media-checker.git
