@@ -35,12 +35,12 @@ class Unused_Media_Checker {
     // Basit admin arayüzü
     public function render_admin_page() {
         ?>
-<div class="wrap">
-    <h1>📁 Kullanılmayan Medya Dosyaları</h1>
-    <p>Bu araç medya kütüphanesindeki kullanılmayan dosyaları tespit eder.</p>
-    <button id="umc-scan-btn" class="button button-primary">Taramayı Başlat</button>
-    <div id="umc-results" style="margin-top:20px;"></div>
-</div>
+		<div class="wrap">
+			<h1>📁 Kullanılmayan Medya Dosyaları</h1>
+			<p>Bu araç medya kütüphanesindeki kullanılmayan dosyaları tespit eder.</p>
+			<button id="umc-scan-btn" class="button button-primary">Taramayı Başlat</button>
+			<div id="umc-results" style="margin-top:20px;"></div>
+		</div>
 <?php
     }
 
@@ -70,7 +70,7 @@ class Unused_Media_Checker {
         $query = new WP_Query([
             'post_type'      => 'attachment',
             'post_status'    => 'inherit',
-            'posts_per_page' => 10,
+            'posts_per_page' => -1,
         ]);
 
         $attachments = $query->posts;
@@ -108,61 +108,103 @@ class Unused_Media_Checker {
 	    else wp_send_json_error('Silme başarısız.');
 	}
 
-	private function is_media_used( $attachment_id ) {
-		global $wpdb;
+private function is_media_used( $attachment_id ) {
+    $url      = wp_get_attachment_url( $attachment_id );
+    $basename = basename( $url );
 
-		$url      = wp_get_attachment_url( $attachment_id );
-		$basename = basename( $url );
+    // 1. Iterate through all posts
+    $all_posts = get_posts([
+        'post_type'      => 'any',
+        'post_status'    => 'any',
+        'numberposts'    => -1,
+        'fields'         => 'ids',
+    ]);
 
-		// İçeriklerde tam URL veya dosya adı geçiyor mu?
-		$in_posts = $wpdb->get_var( $wpdb->prepare(
-			"SELECT COUNT(*) FROM {$wpdb->posts}
-			WHERE post_content LIKE %s OR post_content LIKE %s",
-			'%' . $wpdb->esc_like( $url ) . '%',
-			'%' . $wpdb->esc_like( $basename ) . '%'
-		) );
-		if ( $in_posts > 0 ) {
-			return true;
-		}
+    foreach ( $all_posts as $post_id ) {
+        $content = get_post_field( 'post_content', $post_id );
+        if ( strpos( $content, $url ) !== false || strpos( $content, $basename ) !== false ) {
+            return true;
+        }
 
-		// Postmeta'da URL, ID veya virgüllü ID listelerinde arama
-		$in_meta = $wpdb->get_var( $wpdb->prepare(
-			"SELECT COUNT(*) FROM {$wpdb->postmeta}
-			WHERE meta_value LIKE %s
-			OR meta_value LIKE %s
-			OR meta_value REGEXP %s",
-			'%' . $wpdb->esc_like( $url ) . '%',
-			'%' . $wpdb->esc_like( $basename ) . '%',
-			'(^|,|:|\\s)' . $attachment_id . '($|,|;|\\s|\\})'
-		) );
-		if ( $in_meta > 0 ) {
-			return true;
-		}
+        // 2. Search in post meta (Elementor, ACF, WooCommerce, etc.)
+        $meta = get_post_meta( $post_id );
+        foreach ( $meta as $key => $values ) {
+            foreach ( $values as $val ) {
+                if ( is_serialized( $val ) ) {
+                    $val = maybe_unserialize( $val );
+                }
+                if ( is_array( $val ) ) {
+                    if ( $this->search_in_array( $val, $attachment_id, $url, $basename ) ) {
+                        return true;
+                    }
+                } else {
+                    if (
+                        (string) $val === (string) $attachment_id ||
+                        strpos( (string) $val, $url ) !== false ||
+                        strpos( (string) $val, $basename ) !== false
+                    ) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
 
-		// Elementor özel alanı (JSON içi ID)
-		$elementor_check = $wpdb->get_var( $wpdb->prepare(
-			"SELECT COUNT(*) FROM {$wpdb->postmeta}
-			WHERE meta_key = '_elementor_data'
-			AND (meta_value LIKE %s OR meta_value LIKE %s)",
-			'%\"id\":' . $attachment_id . '%',
-			'%' . $wpdb->esc_like( $url ) . '%'
-		) );
-		if ( $elementor_check > 0 ) {
-			return true;
-		}
+    // 3. Check featured images
+    $featured_query = new WP_Query([
+        'meta_key'   => '_thumbnail_id',
+        'meta_value' => $attachment_id,
+        'post_type'  => 'any',
+        'fields'     => 'ids',
+    ]);
 
-		// ACF / thumbnail kontrolü
-		$acf_check = $wpdb->get_var( $wpdb->prepare(
-			"SELECT COUNT(*) FROM {$wpdb->postmeta}
-			WHERE meta_value = %d OR (meta_key = '_thumbnail_id' AND meta_value = %d)",
-			$attachment_id, $attachment_id
-		) );
-		if ( $acf_check > 0 ) {
-			return true;
-		}
+    if ( $featured_query->have_posts() ) {
+        return true;
+    }
 
-		return false;
-	}
+    return false;
+}
+
+private function search_in_array( $array, $attachment_id, $url, $basename ) {
+    foreach ( $array as $value ) {
+        if ( is_array( $value ) ) {
+            if ( $this->search_in_array( $value, $attachment_id, $url, $basename ) ) {
+                return true;
+            }
+        } else {
+            if (
+                (string) $value === (string) $attachment_id ||
+                strpos( (string) $value, $url ) !== false ||
+                strpos( (string) $value, $basename ) !== false
+            ) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+private function try_decode_json( $string ) {
+    // Try base64 decoding
+    if ( base64_encode( base64_decode( $string, true ) ) === $string ) {
+        $decoded = base64_decode( $string );
+        $json = json_decode( $decoded, true );
+        if ( json_last_error() === JSON_ERROR_NONE ) return $json;
+
+        // Try gzip after base64 decode
+        $gz = @gzuncompress( $decoded );
+        if ( $gz !== false ) {
+            $json = json_decode( $gz, true );
+            if ( json_last_error() === JSON_ERROR_NONE ) return $json;
+        }
+    }
+
+    // Try plain JSON decode
+    $json = json_decode( $string, true );
+    if ( json_last_error() === JSON_ERROR_NONE ) return $json;
+
+    return null;
+}
 }
 
 // Sınıfı başlat
