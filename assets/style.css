@@ -1,0 +1,12 @@
+#umc-results table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 15px;
+}
+#umc-results th, #umc-results td {
+  border: 1px solid #ccc;
+  padding: 8px;
+}
+#umc-results th {
+  background-color: #f9f9f9;
+}
